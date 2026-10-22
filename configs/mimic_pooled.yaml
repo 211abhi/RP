@@ -43,7 +43,8 @@ task:
   type: multitask
   context_hours: 24
   horizon_hours: 1
-  stride_hours: 1
+  # 2h with MIMIC-II pooled in (~6k stays): hourly windows would not fit in 14 GB of RAM.
+  stride_hours: 2
   # Fraction of present columns hidden per training sample. This is what supervises the
   # impute head, and it is also the only thing that makes the other two heads robust to a
   # partial column set at inference. Set from the deployment scenario, never from test data.

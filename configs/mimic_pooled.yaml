@@ -20,12 +20,19 @@ data:
       chartevents: CHARTEVENTS.csv
       prescriptions: PRESCRIPTIONS.csv
       labevents: LABEVENTS.csv
+    # Converted from the MIMIC-II demo tarball by `mimic-convert-mimic2` (4,000 subjects).
+    - name: mimic-ii-demo
+      root: data/raw/mimic-ii-demo/mimic2
+      icustays: ICUSTAYS.csv
+      chartevents: CHARTEVENTS.csv
+      prescriptions: PRESCRIPTIONS.csv
+      labevents: LABEVENTS.csv
   feature_registry: configs/feature_registry.yaml
   drug_registry: configs/drug_registry.yaml
   # An order with no stop time is treated as active for this many hours, not forever.
   default_drug_hours: 24
   frequency_hours: 1
-  split_ratios: {train: 0.70, val: 0.15, test: 0.15}
+  split_ratios: {train: 0.75, val: 0.10, test: 0.15}
   max_forward_fill_hours: 6
 
 task:

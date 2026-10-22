@@ -13,7 +13,7 @@ def main():
     drug_path=cfg["data"].get("drug_registry")
     drug_version,drugs,drug_digest=(load_drug_registry(resolve_path(cfg,drug_path)) if drug_path else ("none",(),""))
     stays=load_sources(cfg,features,args.limit_stays,drugs); ratios=cfg["data"]["split_ratios"]; seed=int(cfg["project"]["seed"])
-    stats=fit_training_stats(stays,seed,ratios); windows=build_windows(stays,stats,context=int(cfg["task"]["context_hours"]),horizon=int(cfg["task"]["horizon_hours"]),stride=int(cfg["task"]["stride_hours"]),max_gap=fill_limits(features,int(cfg["data"]["max_forward_fill_hours"])),seed=seed,ratios=ratios,n_drugs=len(drugs),start_horizon=int(cfg["task"].get("start_horizon_hours",24)))
+    stats=fit_training_stats(stays,seed,ratios); windows=build_windows(stays,stats,context=int(cfg["task"]["context_hours"]),horizon=int(cfg["task"]["horizon_hours"]),stride=int(cfg["task"]["stride_hours"]),max_gap=fill_limits(features,int(cfg["data"]["max_forward_fill_hours"])),seed=seed,ratios=ratios,n_drugs=len(drugs),start_horizon=int(cfg["task"].get("start_horizon_hours",24)),forecast_features=np.asarray([float(f.table=="chartevents") for f in features],dtype=np.float32))
     counts={name:int((windows.split==name).sum()) for name in ("train","val","test")}
     if any(not count for count in counts.values()): raise ValueError(f"one or more splits are empty: {counts}")
     prevalence=drug_prevalence(windows); start_prevalence=drug_prevalence(windows,start=True)

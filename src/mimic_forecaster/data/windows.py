@@ -58,7 +58,11 @@ def drug_prevalence(windows: WindowSet, split: str = "train", start: bool = Fals
 
 def build_windows(stays: list[HourlyStay], stats: RobustStats, *, context: int, horizon: int, stride: int,
                   max_gap, seed: int, ratios: dict[str, float], n_drugs: int = 0,
-                  start_horizon: int = 24) -> WindowSet:
+                  start_horizon: int = 24, forecast_features: np.ndarray | None = None) -> WindowSet:
+    """`forecast_features` (0/1 per feature) limits which columns are forecast targets. Labs are
+    inputs only: a next-hour lab value exists only when a draw happens to land in that hour,
+    and those rare heavy-tailed errors were dragging the shared forecast head below
+    repeat-last-value on every vital."""
     fields: dict[str, list[np.ndarray | str]] = {key: [] for key in WindowSet.__annotations__}
     for stay in stays:
         raw = np.asarray(stay.values, dtype=np.float32); mask = np.asarray(stay.observed_mask, dtype=np.float32)
@@ -74,7 +78,7 @@ def build_windows(stays: list[HourlyStay], stats: RobustStats, *, context: int, 
         last_start = len(raw) - context - horizon
         for start in range(0, last_start + 1, stride):
             target_slice = slice(start + context, start + context + horizon)
-            target_mask = mask[target_slice]
+            target_mask = mask[target_slice] if forecast_features is None else mask[target_slice] * forecast_features
             if not target_mask.any():
                 continue
             fields["values"].append(scaled[start:start + context])

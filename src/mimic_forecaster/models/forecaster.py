@@ -40,6 +40,11 @@ class MultiTaskForecaster(nn.Module):
         # carrying current medications forward is a very strong prior; starting from it means
         # the head only has to learn stops. Inert when medications are unknown.
         self.carry = nn.Parameter(torch.full((n_drugs,), 3.0)) if n_drugs else None
+        # Residual heads start at exactly repeat-last-value. Early stopping is driven by the
+        # summed loss, and the medication heads can peak after one epoch; a randomly
+        # initialised residual would then ship a forecast worse than persistence.
+        for head in (self.head, self.impute_head):
+            nn.init.zeros_(head[-1].weight); nn.init.zeros_(head[-1].bias)
 
     def forward(self, values, observed, present, age, drug_history=None, drug_known=None) -> dict[str, torch.Tensor]:
         state = self.encoder(self.tokenizer(values, observed, present, age, drug_history, drug_known))

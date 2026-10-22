@@ -3,13 +3,15 @@
 Mask-aware adaptation of `LLM-Adapted-Time-Series-Forecaster` for MIMIC ICU data whose
 columns vary between files, sites, and inference requests.
 
-One shared encoder, three heads:
+Inputs: 7 vitals, 15 blood labs, and (optionally) the medication classes the patient is on
+now. One shared encoder, four heads:
 
 | head | question it answers | metric |
 |---|---|---|
-| **`drug`** | which medication classes are active in the next hour, from vitals alone | AUROC / average precision vs. prevalence |
-| **`impute`** | the current value of the vitals that were **not** supplied | MAE vs. training-median fill |
-| **`forecast`** | the next hour of every vital | MAE vs. repeat-last-value |
+| **`drug_start`** | which medication classes will be **newly started within 24h** | AUROC / AP vs. prevalence |
+| **`drug`** | which medication classes are active in the next hour | AP vs. carrying current meds forward |
+| **`impute`** | the current value of the columns that were **not** supplied | MAE vs. training-median fill |
+| **`forecast`** | the next hour of every vital and lab | MAE vs. repeat-last-value |
 
 > Research prototype on the open MIMIC-III / MIMIC-IV demo cohorts (276 ICU stays,
 > 200 patients). **Not for clinical use.**
@@ -56,11 +58,21 @@ is the whole reason `--features` works at inference.
 
 ### What the medication head is and is not
 
-The label is *"was this class active at any hour of the forecast horizon"*, derived from
-`prescriptions` start/stop intervals. Standing ICU orders are long (median 31h), so the
-labels are dense and often highly prevalent. **The model does not see current medications
-as input** — it predicts them from vitals alone, which is the non-trivial part. Judge it by
-average precision against the prevalence baseline printed in the report, never by accuracy.
+Labels come from `prescriptions` start/stop intervals. `drug` asks *"is this class active
+in the next hour"*. Standing ICU orders are long (median 31h), so once current medications
+are known, carrying them forward already scores AP ~0.98. The head therefore starts from
+carry-forward (a learned per-class logit offset) and only learns stops; judge it against the
+carry-forward line in the report, never against prevalence.
+
+`drug_start` is the prescribing question: *"which class, off now, is started within
+`task.start_horizon_hours`"*. Windows whose future runs past the end of the stay are
+unscored rather than negative. This is the head to read.
+
+Current medications are an input with their own known/unknown flag, and are hidden from
+`task.medication_input_dropout` of training samples, so one model answers both "here is
+what they are on" and "we don't know". The report scores every medication head both ways.
+Per-class decision thresholds are fitted on validation (max F1) into `thresholds.json`,
+which `mimic-predict` uses unless `--drug-threshold` overrides it.
 
 Free-text drug strings are collapsed into canonical classes by
 `configs/drug_registry.yaml`. Single-agent classes come first and matching is
@@ -118,6 +130,17 @@ the file lacks are imputed:
 
 ```bash
 mimic-predict --config configs/mimic_pooled.yaml --patient-csv examples/patient.csv
+```
+
+Lab columns (`glucose, potassium, sodium, bicarbonate, bun, creatinine, magnesium, calcium,
+wbc, hemoglobin, platelets, inr, bilirubin, lactate, ph`) go in the same CSV, blank between
+draws; each is held for up to 24h. Add `--current-meds heparin,insulin` (or `none`) when the
+current medication classes are known. The response then carries `medications` (active next
+hour) and `new_starts` (likely started within 24h):
+
+```bash
+mimic-predict --config configs/runtime_best.yaml --patient-csv examples/patient.csv \
+              --current-meds heparin,acid_suppression
 ```
 
 Omit `--features` to supply every column; `imputed_columns` is then empty. `mimic-predict`
@@ -242,13 +265,34 @@ Key knobs beyond the originals, all in `configs/*.yaml`:
 | `data.drug_registry` | canonical medication classes and their name patterns |
 | `data.default_drug_hours` | how long an order with no stop time counts as active (not forever) |
 | `task.column_dropout_rate` | fraction of supplied columns hidden per sample; supervises `impute` |
-| `task.loss_weights` | per-head weights; set a head to `0` to switch it off |
+| `task.loss_weights` | per-head weights (`forecast`, `drug`, `drug_start`, `impute`); `0` switches a head off |
+| `task.medication_inputs` | feed current medication classes as an input |
+| `task.medication_input_dropout` | fraction of training samples with medications hidden (unknown) |
+| `task.start_horizon_hours` | window for the new-start label |
+| feature `table` / `max_fill_hours` | `labevents` for labs; per-feature forward-fill limit |
 | `project.device` | `auto`, or pin `cuda` / `cuda:1` / `cpu` / `mps` |
 | `training.amp` | mixed precision; takes effect on CUDA only |
 
 Set `loss_weights: {forecast: 1.0, drug: 0.0, impute: 0.0}` to reproduce the original
 forecast-only model. `column_dropout_rate` must be positive whenever `impute` is weighted —
 the config refuses the combination otherwise, because the head would have no supervision.
+
+## Choosing the best settings
+
+`mimic-sweep --config <cfg> --trials 16` trains random settings (width, depth, patch size,
+dropout, learning rate, weight decay) on the same prepared windows and keeps the lowest
+validation loss; trial 0 is the config unchanged, and the test split is never consulted.
+It writes `configs/<cfg>_best.yaml` pointing at the winner's checkpoint. The notebook
+runs it by default (`SWEEP_TRIALS`).
+
+## Full MIMIC-IV
+
+The demo cohort is the ceiling on accuracy. With credentialed PhysioNet access, download
+MIMIC-IV 3.1 to `data/raw/mimic-iv-3.1/` and use `configs/mimic_iv_full.yaml` (12h window
+stride, so the windows fit in memory). On Kaggle, upload it as a **private** dataset and
+attach it instead of the demo: the notebook detects it and switches stride on its own. Start
+with `LIMIT_STAYS=20000` to check the RAM headroom; the loader is pure Python and has not
+been run against the full release.
 
 ## Documentation
 

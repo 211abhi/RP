@@ -125,7 +125,11 @@ def masked_bce(logits, target, mask, pos_weight=None):
 def multitask_loss(output, batch, weights, pos_weight=None, keep=None, start_weight=None):
     """Weighted sum of the heads' masked losses, plus the per-head parts."""
     _, observed, _, _, targets, target_mask, drug_targets, drug_mask = batch[:8]
-    parts = {"forecast": masked_mse(output["forecast"], targets, target_mask)}
+    # A hidden column's future is the impute head's question, not the forecast head's:
+    # scoring it here teaches the forecast to rebuild hidden vitals from labs, which then
+    # misfires at inference when nothing is hidden.
+    forecast_mask = target_mask * keep.unsqueeze(1) if keep is not None else target_mask
+    parts = {"forecast": masked_mse(output["forecast"], targets, forecast_mask)}
     if "drug_logits" in output and weights.get("drug", 0.0):
         parts["drug"] = masked_bce(output["drug_logits"], drug_targets, drug_mask, pos_weight)
     if "start_logits" in output and weights.get("drug_start", 0.0) and len(batch) > 10:

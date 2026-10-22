@@ -1,4 +1,4 @@
-"""Predict from one ICU stay: next-hour vitals, medication classes, and withheld columns.
+"""Predict from one ICU stay: next-hour vitals and labs, medications, and withheld columns.
 
 `--features` is the point of the missing-column path: name only the columns a site actually
 charts and every other configured vital is marked absent, exactly as it would be at a
@@ -14,7 +14,7 @@ from mimic_forecaster.data.artifacts import load_prepared
 from mimic_forecaster.data.mimic import HourlyStay,_floor_hour,_hours,_parse_time,load_sources
 from mimic_forecaster.data.preprocessing import causal_impute,transform
 from mimic_forecaster.data.prescriptions import load_drug_registry
-from mimic_forecaster.data.registry import load_registry
+from mimic_forecaster.data.registry import fill_limits,load_registry
 from mimic_forecaster.pipeline import build_forecaster
 
 def load_checkpoint(cfg,artifact,n_features,registry_digest,n_drugs=0):
@@ -65,11 +65,13 @@ def resolve_keep(feature_names,requested):
     if not wanted: raise SystemExit("--features needs at least one column")
     return np.asarray([float(name in wanted) for name in feature_names],dtype=np.float32)
 
-def forecast(model,stay,stats,features,context,max_gap,keep=None):
+def forecast(model,stay,stats,features,context,max_gap,keep=None,current_meds=None):
     """Run the last `context` hourly bins of one stay through every head, in original units.
 
     A hidden column is zeroed in all four input channels and its staleness is set to the
     maximum, so it is indistinguishable from a column the source never had.
+    `current_meds` is a 0/1 vector over drug classes, active for the whole context; None
+    means unknown, which the model was trained to handle.
     """
     raw=np.asarray(stay.values,dtype=np.float32); mask=np.asarray(stay.observed_mask,dtype=np.float32)
     if len(raw)<context: raise ValueError(f"stay {stay.stay_id} has {len(raw)} hourly bins, needs {context}")
@@ -81,17 +83,22 @@ def forecast(model,stay,stats,features,context,max_gap,keep=None):
         present=present*keep
         values,observed,ages=values*keep,observed*keep,ages*keep+(1.0-keep)
     batch=[torch.from_numpy(a[None]).float() for a in (values,observed,present,ages)]
+    if current_meds is not None:
+        meds=torch.as_tensor(current_meds,dtype=torch.float32)[None]
+        batch+=[meds[:,None,:].expand(1,context,-1),torch.ones_like(meds)]
     with torch.no_grad(): out=model(*batch)
     result={"forecast":out["forecast"][0].numpy()*stats.scale+stats.median,
             "impute":out["impute"][0].numpy()*stats.scale+stats.median}
     if "drug_logits" in out: result["drug_probability"]=torch.sigmoid(out["drug_logits"])[0].numpy()
+    if "start_logits" in out: result["start_probability"]=torch.sigmoid(out["start_logits"])[0].numpy()
     return result
 
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--config",required=True); parser.add_argument("--stay-id"); parser.add_argument("--limit-stays",type=int)
     parser.add_argument("--patient-csv",help="predict for your own patient: CSV with a 'time' column and any subset of the vitals")
     parser.add_argument("--features",help="comma-separated columns to supply; every other configured vital is treated as absent and imputed")
-    parser.add_argument("--drug-threshold",type=float,default=0.5,help="probability above which a medication class is listed as predicted")
+    parser.add_argument("--current-meds",help="comma-separated drug classes the patient is on now ('none' for none); omit when unknown")
+    parser.add_argument("--drug-threshold",type=float,help="one probability cut for every class; default is the per-class cut fitted on validation")
     args=parser.parse_args(); cfg=load_config(args.config); artifact=resolve_path(cfg,cfg["project"]["artifact_dir"])
     _,features,registry_digest=load_registry(resolve_path(cfg,cfg["data"]["feature_registry"]))
     _,stats,meta=load_prepared(artifact/"prepared")
@@ -107,25 +114,38 @@ def main():
     else: stays=load_sources(cfg,features,args.limit_stays,drugs)
     if args.stay_id and not args.patient_csv: stays=[s for s in stays if s.stay_id==args.stay_id] or _die(args.stay_id)
     keep=resolve_keep(meta["features"],args.features.split(",") if args.features else None)
+    current=None
+    if args.current_meds is not None:
+        wanted={n.strip() for n in args.current_meds.split(",") if n.strip() and n.strip()!="none"}
+        if wanted-set(drug_names): raise SystemExit(f"unknown drug classes {sorted(wanted-set(drug_names))}; have {drug_names}")
+        current=np.asarray([float(n in wanted) for n in drug_names],dtype=np.float32)
+    mode="with_current_meds" if current is not None else "without_current_meds"
+    fitted=json.loads((artifact/"thresholds.json").read_text()).get(mode,{}) if (artifact/"thresholds.json").exists() else {}
+    def cut(section,name): return args.drug_threshold if args.drug_threshold is not None else fitted.get(section,{}).get(name,0.5)
     supplied=[n for n,k in zip(meta["features"],keep) if k]; withheld=[n for n,k in zip(meta["features"],keep) if not k]
     for stay in stays:
         if len(stay.values)<context: continue
-        out=forecast(model,stay,stats,features,context,int(cfg["data"]["max_forward_fill_hours"]),keep)
+        out=forecast(model,stay,stats,features,context,fill_limits(features,int(cfg["data"]["max_forward_fill_hours"])),keep,current)
         last=stay.timestamps[-1]; prediction=out["forecast"]
         entry={"stay_id":stay.stay_id,"subject_id":stay.subject_id,"last_observed_hour":last.isoformat(),
             "forecast":[{"hour":(last+timedelta(hours=(step+1)*frequency)).isoformat(),
                 "values":{name:round(float(prediction[step,i]),3) for i,name in enumerate(meta["features"])}} for step in range(prediction.shape[0])],
             "imputed_columns":{name:round(float(out["impute"][i]),3) for i,name in enumerate(meta["features"]) if not keep[i]}}
-        if "drug_probability" in out:
-            probability={name:round(float(out["drug_probability"][i]),4) for i,name in enumerate(drug_names)}
-            entry["medications"]={"predicted":sorted([n for n,p in probability.items() if p>=args.drug_threshold],
-                                                     key=lambda n:-probability[n]),"probability":probability}
+        for key,section,label in (("drug_probability","medication","medications"),("start_probability","new_start","new_starts")):
+            if key not in out: continue
+            probability={name:round(float(out[key][i]),4) for i,name in enumerate(drug_names)}
+            if section=="new_start" and current is not None:  # a drug already running cannot be newly started
+                probability={n:p for n,p in probability.items() if not current[drug_names.index(n)]}
+            entry[label]={"predicted":sorted([n for n,p in probability.items() if p>=cut(section,n)],
+                                             key=lambda n:-probability[n]),"probability":probability}
         results.append(entry)
     if not results: raise ValueError("no stay had enough history to forecast")
     print(json.dumps({"val_loss":checkpoint.get("val_loss",checkpoint.get("val_mse")),"stays":len(results),
         "supplied_columns":supplied,"withheld_columns":withheld,
         "note":"imputed_columns are model estimates, not measurements" if withheld else "all configured columns were supplied",
-        "drug_threshold":args.drug_threshold,"predictions":results},indent=2))
+        "current_medications":"unknown" if current is None else [n for n,f in zip(drug_names,current) if f],
+        "thresholds":"fixed" if args.drug_threshold is not None else ("fitted on validation" if fitted else "0.5"),
+        "predictions":results},indent=2))
 
 def _die(stay_id): raise SystemExit(f"stay_id not found in the configured source: {stay_id}")
 

@@ -11,3 +11,5 @@ configs/runtime.yaml
 *_artifacts.zip
 *.egg-info/
 mimic_demo_data.zip
+configs/sweep_*.yaml
+configs/*_best.yaml

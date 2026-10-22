@@ -34,15 +34,19 @@ def fit_robust_stats(values: np.ndarray, mask: np.ndarray) -> RobustStats:
     return RobustStats(np.asarray(medians, dtype=np.float32), np.asarray(scales, dtype=np.float32))
 
 
-def causal_impute(values: np.ndarray, mask: np.ndarray, fallback: np.ndarray, max_gap: int) -> tuple[np.ndarray, np.ndarray]:
-    """Bounded forward fill followed by fallback; returns values and age channels."""
+def causal_impute(values: np.ndarray, mask: np.ndarray, fallback: np.ndarray, max_gap) -> tuple[np.ndarray, np.ndarray]:
+    """Bounded forward fill followed by fallback; returns values and age channels.
+
+    `max_gap` is one limit for every column or one per column (labs are held longer).
+    """
     result = np.asarray(values, dtype=np.float32).copy()
     observed = np.asarray(mask, dtype=np.float32)
     if result.shape != observed.shape:
         raise ValueError("values and mask shapes differ")
     age = np.ones_like(result, dtype=np.float32)
     last = np.asarray(fallback, dtype=np.float32).copy()
-    since = np.full(result.shape[1], max_gap + 1, dtype=np.int32)
+    max_gap = np.broadcast_to(np.asarray(max_gap, dtype=np.int32), (result.shape[1],))
+    since = max_gap + 1
     for time_index in range(result.shape[0]):
         for feature_index in range(result.shape[1]):
             if observed[time_index, feature_index] and np.isfinite(result[time_index, feature_index]):
@@ -50,8 +54,8 @@ def causal_impute(values: np.ndarray, mask: np.ndarray, fallback: np.ndarray, ma
                 since[feature_index] = 0
             else:
                 since[feature_index] += 1
-                result[time_index, feature_index] = last[feature_index] if since[feature_index] <= max_gap else fallback[feature_index]
-            age[time_index, feature_index] = min(since[feature_index], max_gap + 1) / (max_gap + 1)
+                result[time_index, feature_index] = last[feature_index] if since[feature_index] <= max_gap[feature_index] else fallback[feature_index]
+            age[time_index, feature_index] = min(since[feature_index], max_gap[feature_index] + 1) / (max_gap[feature_index] + 1)
     return result, age
 
 

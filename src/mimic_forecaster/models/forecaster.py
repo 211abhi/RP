@@ -5,6 +5,7 @@ same latent patient state:
 
   forecast   next `horizon` hours of every vital          (regression, masked MSE)
   drug       which medication classes are active next     (multi-label, masked BCE)
+  start      which classes are newly started within a day (multi-label, masked BCE)
   impute     the current value of the columns NOT given   (regression, masked MSE)
 
 The impute head is what makes a partial column set usable at inference: feed whichever
@@ -33,9 +34,15 @@ class MultiTaskForecaster(nn.Module):
         self.impute_head = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(embed_dim, n_targets))
         self.drug_head = (nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(embed_dim, n_drugs))
                           if n_drugs else None)
+        self.start_head = (nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(embed_dim, n_drugs))
+                           if n_drugs else None)
+        # Per-class logit offset for "on it at the last hour". Orders run for about a day, so
+        # carrying current medications forward is a very strong prior; starting from it means
+        # the head only has to learn stops. Inert when medications are unknown.
+        self.carry = nn.Parameter(torch.full((n_drugs,), 3.0)) if n_drugs else None
 
-    def forward(self, values, observed, present, age) -> dict[str, torch.Tensor]:
-        state = self.encoder(self.tokenizer(values, observed, present, age))
+    def forward(self, values, observed, present, age, drug_history=None, drug_known=None) -> dict[str, torch.Tensor]:
+        state = self.encoder(self.tokenizer(values, observed, present, age, drug_history, drug_known))
         last = values[:, -1, :]
         out = {
             # Residual on the last context bin, i.e. learn the delta from persistence.
@@ -46,6 +53,9 @@ class MultiTaskForecaster(nn.Module):
         }
         if self.drug_head is not None:
             out["drug_logits"] = self.drug_head(state)
+            if drug_history is not None and drug_history.shape[-1] == self.n_drugs:
+                out["drug_logits"] = out["drug_logits"] + self.carry * (2.0 * drug_history[:, -1, :] - 1.0) * drug_known
+            out["start_logits"] = self.start_head(state)
         return out
 
 

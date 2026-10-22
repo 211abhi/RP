@@ -12,7 +12,7 @@
 #   676 / 677  temperature in Celsius           226253  SpO2 desat limit
 # Blood pressure is non-invasive cuff only; arterial-line ids (51/8368/52, 220050-2)
 # measure the same quantity at a different site with a systematic offset.
-version: "mimic-vitals-v2"
+version: "mimic-vitals-labs-v3"
 features:
   - name: heart_rate
     itemids: [220045, 211]          # metavision/mimic-iv, carevue
@@ -49,3 +49,23 @@ features:
     unit: degF
     required: false
     valid_range: [80, 115]
+
+  # Blood labs, from labevents. Same itemids in MIMIC-III and MIMIC-IV. Drawn every 6-24h,
+  # so each is held for up to a day; the staleness channel tells the model how old it is.
+  # These are what prescribing actually keys on: glucose -> insulin, potassium -> KCl,
+  # INR -> warfarin/heparin, creatinine -> diuretics and renal dosing, lactate -> pressors.
+  - {name: glucose,     table: labevents, itemids: [50931], unit: mg/dL,  required: false, valid_range: [10, 1500], max_fill_hours: 24}
+  - {name: potassium,   table: labevents, itemids: [50971], unit: mEq/L,  required: false, valid_range: [1, 10],    max_fill_hours: 24}
+  - {name: sodium,      table: labevents, itemids: [50983], unit: mEq/L,  required: false, valid_range: [100, 185], max_fill_hours: 24}
+  - {name: bicarbonate, table: labevents, itemids: [50882], unit: mEq/L,  required: false, valid_range: [2, 60],    max_fill_hours: 24}
+  - {name: bun,         table: labevents, itemids: [51006], unit: mg/dL,  required: false, valid_range: [1, 300],   max_fill_hours: 24}
+  - {name: creatinine,  table: labevents, itemids: [50912], unit: mg/dL,  required: false, valid_range: [0.1, 25],  max_fill_hours: 24}
+  - {name: magnesium,   table: labevents, itemids: [50960], unit: mg/dL,  required: false, valid_range: [0.3, 10],  max_fill_hours: 24}
+  - {name: calcium,     table: labevents, itemids: [50893], unit: mg/dL,  required: false, valid_range: [3, 20],    max_fill_hours: 24}
+  - {name: wbc,         table: labevents, itemids: [51301], unit: K/uL,   required: false, valid_range: [0.1, 300], max_fill_hours: 24}
+  - {name: hemoglobin,  table: labevents, itemids: [51222], unit: g/dL,   required: false, valid_range: [2, 25],    max_fill_hours: 24}
+  - {name: platelets,   table: labevents, itemids: [51265], unit: K/uL,   required: false, valid_range: [1, 2000],  max_fill_hours: 24}
+  - {name: inr,         table: labevents, itemids: [51237], unit: ratio,  required: false, valid_range: [0.5, 20],  max_fill_hours: 24}
+  - {name: bilirubin,   table: labevents, itemids: [50885], unit: mg/dL,  required: false, valid_range: [0.1, 80],  max_fill_hours: 24}
+  - {name: lactate,     table: labevents, itemids: [50813], unit: mmol/L, required: false, valid_range: [0.1, 30],  max_fill_hours: 12}
+  - {name: ph,          table: labevents, itemids: [50820], unit: pH,     required: false, valid_range: [6.5, 8.0], max_fill_hours: 12}

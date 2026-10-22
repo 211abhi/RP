@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Dataset
 from .data.windows import WindowSet
 
 FIELDS = ("values", "observed_mask", "feature_present_mask", "age", "targets", "target_mask",
-          "drug_targets", "drug_mask")
+          "drug_targets", "drug_mask", "drug_history", "start_targets", "start_mask")
 
 
 class ArrayDataset(Dataset):
@@ -87,6 +87,26 @@ def apply_column_dropout(values, observed, present, age, keep):
     return values * column, observed * column, keep, age * column + (1.0 - column)
 
 
+def model_inputs(batch, rate: float, med_rate: float = 0.0, generator: torch.Generator | None = None,
+                 meds: bool = True):
+    """Positional model inputs for one batch, with column and medication dropout applied.
+
+    Medication dropout hides the whole current-medication input for a fraction of samples,
+    so one model serves both "here is what the patient is on" and "we do not know".
+    `meds=False` forces the unknown case, for evaluation.
+    """
+    values, observed, present, age = batch[:4]
+    keep = drop_columns(present, rate, generator) if rate > 0 else None
+    inputs = apply_column_dropout(values, observed, present, age, keep) if keep is not None else (values, observed, present, age)
+    history, known = batch[8], batch[7]
+    if not meds:
+        history, known = history * 0.0, known * 0.0
+    elif med_rate > 0:
+        shown = (torch.rand((len(values), 1), device=values.device, generator=generator) >= med_rate).float()
+        history, known = history * shown.unsqueeze(1), known * shown
+    return (*inputs, history, known), keep
+
+
 def masked_mse(prediction, target, mask):
     count = mask.sum()
     if count <= 0: raise ValueError("batch has no observed targets")
@@ -102,12 +122,14 @@ def masked_bce(logits, target, mask, pos_weight=None):
     return (loss * mask).sum() / mask.sum()
 
 
-def multitask_loss(output, batch, weights, pos_weight=None, keep=None):
-    """Weighted sum of the three heads' masked losses, plus the per-head parts."""
-    _, observed, _, _, targets, target_mask, drug_targets, drug_mask = batch
+def multitask_loss(output, batch, weights, pos_weight=None, keep=None, start_weight=None):
+    """Weighted sum of the heads' masked losses, plus the per-head parts."""
+    _, observed, _, _, targets, target_mask, drug_targets, drug_mask = batch[:8]
     parts = {"forecast": masked_mse(output["forecast"], targets, target_mask)}
     if "drug_logits" in output and weights.get("drug", 0.0):
         parts["drug"] = masked_bce(output["drug_logits"], drug_targets, drug_mask, pos_weight)
+    if "start_logits" in output and weights.get("drug_start", 0.0) and len(batch) > 10:
+        parts["drug_start"] = masked_bce(output["start_logits"], batch[9], batch[10], start_weight)
     if keep is not None and weights.get("impute", 0.0):
         # Supervised only where the column was hidden AND the hidden truth was observed.
         hidden = (1.0 - keep) * observed[:, -1, :]
@@ -119,32 +141,33 @@ def multitask_loss(output, batch, weights, pos_weight=None, keep=None):
 
 @torch.no_grad()
 def evaluate_loss(model: nn.Module, loader: DataLoader, device: torch.device, weights: dict,
-                  pos_weight=None, dropout_rate: float = 0.0, seed: int = 0) -> float:
+                  pos_weight=None, dropout_rate: float = 0.0, seed: int = 0, med_rate: float = 0.0,
+                  start_weight=None) -> float:
     """Validation objective: the same weighted multi-task loss, with a fixed dropout draw.
 
     The column-dropout draw is reseeded per call so the validation number moves with the
     model and not with the random stream.
     """
     model.eval(); totals = 0.0; batches = 0
-    generator = torch.Generator(device=device).manual_seed(seed) if dropout_rate > 0 else None
+    generator = torch.Generator(device=device).manual_seed(seed)
     for raw in loader:
         batch = tuple(item.to(device, non_blocking=True) for item in raw)
-        values, observed, present, age = batch[:4]
-        keep = drop_columns(present, dropout_rate, generator) if dropout_rate > 0 else None
-        inputs = apply_column_dropout(values, observed, present, age, keep) if keep is not None else (values, observed, present, age)
-        total, _ = multitask_loss(model(*inputs), batch, weights, pos_weight, keep)
+        inputs, keep = model_inputs(batch, dropout_rate, med_rate, generator)
+        total, _ = multitask_loss(model(*inputs), batch, weights, pos_weight, keep, start_weight)
         totals += float(total); batches += 1
     if not batches: raise ValueError("evaluation split has no windows")
     return totals / batches
 
 
 def train_model(model: nn.Module, windows: WindowSet, cfg: dict, checkpoint_path: Path, contract: dict,
-                pos_weight: np.ndarray | None = None, verbose: bool = True) -> dict:
+                pos_weight: np.ndarray | None = None, verbose: bool = True,
+                start_weight: np.ndarray | None = None) -> dict:
     settings = cfg["training"]
     device = resolve_device(cfg["project"].get("device"))
     torch.manual_seed(int(cfg["project"]["seed"]))
     weights = {str(k): float(v) for k, v in cfg["task"].get("loss_weights", {}).items()} or {"forecast": 1.0}
     rate = float(cfg["task"].get("column_dropout_rate", 0.0))
+    med_rate = float(cfg["task"].get("medication_input_dropout", 0.0)) if cfg["task"].get("medication_inputs") else 1.0
     model = wrap_for_devices(model, device, verbose)
     pinned = device.type == "cuda"
     workers = int(settings.get("num_workers", 0))
@@ -155,14 +178,18 @@ def train_model(model: nn.Module, windows: WindowSet, cfg: dict, checkpoint_path
                             num_workers=workers, pin_memory=pinned, persistent_workers=bool(workers))
     weight_tensor = (torch.as_tensor(pos_weight, dtype=torch.float32, device=device)
                      if pos_weight is not None else None)
+    start_tensor = (torch.as_tensor(start_weight, dtype=torch.float32, device=device)
+                    if start_weight is not None else None)
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=float(settings["learning_rate"]), weight_decay=float(settings["weight_decay"]))
     amp = bool(settings.get("amp", True)) and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    # Halve the learning rate when validation stalls; early stopping still has the last word.
+    schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=max(1, int(settings["patience"]) // 3))
     best = float("inf"); stale = 0; history = []; checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     epochs = int(settings["epochs"]); patience = int(settings["patience"])
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if verbose:
-        heads = "+".join(name for name in ("forecast", "drug", "impute") if weights.get(name, 0.0))
+        heads = "+".join(name for name in ("forecast", "drug", "drug_start", "impute") if weights.get(name, 0.0))
         print(f"training on {len(train_loader.dataset):,} windows, validating on {len(val_loader.dataset):,}"
               f"  |  {trainable:,} trainable parameters  |  device {device}", flush=True)
         print(f"heads: {heads}  |  column dropout {rate:.0%}  |  mixed precision {'on' if amp else 'off'}", flush=True)
@@ -171,17 +198,18 @@ def train_model(model: nn.Module, windows: WindowSet, cfg: dict, checkpoint_path
         model.train(); started = time.perf_counter(); running = 0.0; seen = 0; parts_sum: dict[str, float] = {}
         for raw in train_loader:
             batch = tuple(item.to(device, non_blocking=True) for item in raw)
-            values, observed, present, age = batch[:4]
-            keep = drop_columns(present, rate) if rate > 0 else None
-            inputs = apply_column_dropout(values, observed, present, age, keep) if keep is not None else (values, observed, present, age)
+            values = batch[0]
+            inputs, keep = model_inputs(batch, rate, med_rate)
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast("cuda", enabled=amp):
-                loss, parts = multitask_loss(model(*inputs), batch, weights, weight_tensor, keep)
+                loss, parts = multitask_loss(model(*inputs), batch, weights, weight_tensor, keep, start_tensor)
             if not torch.isfinite(loss): raise FloatingPointError("non-finite training loss")
             scaler.scale(loss).backward(); scaler.step(optimizer); scaler.update()
             running += float(loss.detach()) * len(values); seen += len(values)
             for name, value in parts.items(): parts_sum[name] = parts_sum.get(name, 0.0) + value * len(values)
-        val = evaluate_loss(model, val_loader, device, weights, weight_tensor, rate, int(cfg["project"]["seed"]))
+        val = evaluate_loss(model, val_loader, device, weights, weight_tensor, rate, int(cfg["project"]["seed"]),
+                            med_rate, start_tensor)
+        schedule.step(val)
         history.append({"epoch": epoch, "train_loss": running / seen, "val_loss": val,
                         **{f"train_{k}": v / seen for k, v in parts_sum.items()}})
         improved = val < best

@@ -21,6 +21,9 @@ class WindowSet:
     target_mask: np.ndarray
     drug_targets: np.ndarray
     drug_mask: np.ndarray
+    drug_history: np.ndarray      # [context, drug] exposure the patient is already on (model input)
+    start_targets: np.ndarray     # [drug] class newly started within start_horizon hours
+    start_mask: np.ndarray        # [drug] scoreable: charted, not already active, future fully observed
     split: np.ndarray
 
 
@@ -40,22 +43,23 @@ def fit_training_stats(stays: list[HourlyStay], seed: int, ratios: dict[str, flo
     return fit_robust_stats(np.concatenate(values), np.concatenate(masks))
 
 
-def drug_prevalence(windows: WindowSet, split: str = "train") -> np.ndarray:
+def drug_prevalence(windows: WindowSet, split: str = "train", start: bool = False) -> np.ndarray:
     """Per-class positive rate over labelled windows, for BCE positive weighting.
 
     Medication labels are heavily imbalanced (a vasopressor appears in a few percent of
     hours), so an unweighted BCE converges on predicting "never" for the rare classes.
     """
     keep = windows.split == split
-    mask = windows.drug_mask[keep]
+    mask = (windows.start_mask if start else windows.drug_mask)[keep]
     total = mask.sum(0)
-    positives = (windows.drug_targets[keep] * mask).sum(0)
+    positives = ((windows.start_targets if start else windows.drug_targets)[keep] * mask).sum(0)
     return np.divide(positives, total, out=np.zeros_like(positives), where=total > 0)
 
 
 def build_windows(stays: list[HourlyStay], stats: RobustStats, *, context: int, horizon: int, stride: int,
-                  max_gap: int, seed: int, ratios: dict[str, float], n_drugs: int = 0) -> WindowSet:
-    fields: dict[str, list[np.ndarray | str]] = {key: [] for key in ("values", "observed_mask", "feature_present_mask", "age", "targets", "target_mask", "drug_targets", "drug_mask", "split")}
+                  max_gap, seed: int, ratios: dict[str, float], n_drugs: int = 0,
+                  start_horizon: int = 24) -> WindowSet:
+    fields: dict[str, list[np.ndarray | str]] = {key: [] for key in WindowSet.__annotations__}
     for stay in stays:
         raw = np.asarray(stay.values, dtype=np.float32); mask = np.asarray(stay.observed_mask, dtype=np.float32)
         filled, age = causal_impute(raw, mask, stats.median, max_gap)
@@ -83,6 +87,21 @@ def build_windows(stays: list[HourlyStay], stats: RobustStats, *, context: int, 
             fields["drug_targets"].append(active[target_slice].max(0) if active is not None
                                           else np.zeros(n_drugs, dtype=np.float32))
             fields["drug_mask"].append(drug_present)
+            end = start + context
+            if active is not None:
+                fields["drug_history"].append(active[start:end])
+                # New start: off at the last observed hour, on at some hour of the next
+                # `start_horizon`. Windows whose future runs past the stay are unscored,
+                # never scored negative.
+                already = active[end - 1]
+                complete = end + start_horizon <= len(raw)
+                fields["start_targets"].append(((1.0 - already) * active[end:end + start_horizon].max(0))
+                                               if complete else np.zeros(n_drugs, dtype=np.float32))
+                fields["start_mask"].append(drug_present * (1.0 - already) * float(complete))
+            else:
+                fields["drug_history"].append(np.zeros((context, n_drugs), dtype=np.float32))
+                fields["start_targets"].append(np.zeros(n_drugs, dtype=np.float32))
+                fields["start_mask"].append(np.zeros(n_drugs, dtype=np.float32))
             fields["split"].append(split)
     if not fields["values"]:
         raise ValueError("no eligible windows were built")

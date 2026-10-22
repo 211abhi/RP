@@ -13,11 +13,13 @@ data:
       icustays: icu/icustays.csv.gz
       chartevents: icu/chartevents.csv.gz
       prescriptions: hosp/prescriptions.csv.gz
+      labevents: hosp/labevents.csv.gz
     - name: mimic-iii-demo
       root: data/raw/mimic-iii-demo-1.4/physionet.org/files/mimiciii-demo/1.4
       icustays: ICUSTAYS.csv
       chartevents: CHARTEVENTS.csv
       prescriptions: PRESCRIPTIONS.csv
+      labevents: LABEVENTS.csv
   feature_registry: configs/feature_registry.yaml
   drug_registry: configs/drug_registry.yaml
   # An order with no stop time is treated as active for this many hours, not forever.
@@ -39,9 +41,16 @@ task:
   # impute head, and it is also the only thing that makes the other two heads robust to a
   # partial column set at inference. Set from the deployment scenario, never from test data.
   column_dropout_rate: 0.3
+  # The medications the patient is already on are an input. They are hidden for this
+  # fraction of training samples, so the same model also answers "we don't know".
+  medication_inputs: true
+  medication_input_dropout: 0.5
+  # A "new start" is a class that is off at the last observed hour and on within this many.
+  start_horizon_hours: 24
   loss_weights:
     forecast: 1.0
     drug: 0.5
+    drug_start: 0.5
     impute: 0.5
 
 tokenizer:

@@ -9,6 +9,7 @@ data:
   icustays: icu/icustays.csv.gz
   chartevents: icu/chartevents.csv.gz
   prescriptions: hosp/prescriptions.csv.gz
+  labevents: hosp/labevents.csv.gz
   feature_registry: configs/feature_registry.yaml
   drug_registry: configs/drug_registry.yaml
   # An order with no stop time is treated as active for this many hours, not forever.

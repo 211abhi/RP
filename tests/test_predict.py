@@ -76,3 +76,27 @@ def test_load_patient_csv_bins_hours_and_marks_missing_columns(tmp_path):
     except SystemExit as error:
         assert "48" in str(error); return
     raise AssertionError("a too-short history must fail loudly")
+
+
+def test_average_precision_is_tie_aware():
+    from mimic_forecaster.cli.evaluate import average_precision, best_threshold
+    labels = np.array([1, 0, 1, 0])
+    # a 0/1 score: precision 1/2 at recall 1/2, then 1/2 at recall 1 -> AP = 0.5
+    assert average_precision(np.array([1., 1., 0., 0.]), labels) == 0.5
+    assert average_precision(np.array([.9, .1, .8, .2]), labels) == 1.0
+    assert best_threshold(np.array([.9, .1, .8, .2]), labels) == 0.8
+
+
+def test_lab_results_land_on_the_stay_open_at_that_hour(tmp_path):
+    from mimic_forecaster.data.mimic import FeatureSpec, collect_lab_events
+    path = tmp_path / "labevents.csv"
+    path.write_text("subject_id,hadm_id,itemid,charttime,valuenum\n"
+                    "7,,50931,2020-01-01 05:20:00,140\n"      # inside stay A
+                    "7,,50931,2020-01-03 01:00:00,90\n"       # between stays -> dropped
+                    "7,,50931,2020-01-05 02:00:00,5000\n"     # out of range -> dropped
+                    "7,,50931,2020-01-05 03:00:00,110\n")     # inside stay B
+    glucose = (FeatureSpec("glucose", (50931,), 10, 1500, "labevents", 24),)
+    windows = {"7": [("A", datetime(2020, 1, 1), datetime(2020, 1, 2)), ("B", datetime(2020, 1, 5), datetime(2020, 1, 6))]}
+    buckets, seen = collect_lab_events(path, glucose, windows)
+    assert dict(buckets) == {("A", datetime(2020, 1, 1, 5), 0): [140.0], ("B", datetime(2020, 1, 5, 3), 0): [110.0]}
+    assert seen == {50931}

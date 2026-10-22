@@ -45,8 +45,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
     rate = float(cfg["task"].get("column_dropout_rate", 0.0))
     if not 0.0 <= rate < 1.0:
         raise ValueError("column_dropout_rate must be in [0, 1)")
+    med_rate = float(cfg["task"].get("medication_input_dropout", 0.0))
+    if not 0.0 <= med_rate <= 1.0:
+        raise ValueError("medication_input_dropout must be in [0, 1]")
     weights = cfg["task"].get("loss_weights", {}) or {}
-    unknown = set(weights).difference({"forecast", "drug", "impute"})
+    unknown = set(weights).difference({"forecast", "drug", "drug_start", "impute"})
     if unknown:
         raise ValueError(f"unknown loss_weights keys: {sorted(unknown)}")
     if any(float(value) < 0 for value in weights.values()):

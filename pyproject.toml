@@ -23,6 +23,7 @@ mimic-inspect = "mimic_forecaster.cli.inspect:main"
 mimic-train = "mimic_forecaster.cli.train:main"
 mimic-evaluate = "mimic_forecaster.cli.evaluate:main"
 mimic-predict = "mimic_forecaster.cli.predict:main"
+mimic-sweep = "mimic_forecaster.cli.sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

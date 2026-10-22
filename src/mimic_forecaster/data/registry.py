@@ -30,7 +30,17 @@ def load_registry(path: str | Path) -> tuple[str, tuple[FeatureSpec, ...], str]:
             raise ValueError(f"invalid feature specification: {name}")
         names.add(name)
         itemids.update(ids)
-        features.append(FeatureSpec(name, ids, low, high))
+        table = str(entry.get("table", "chartevents"))
+        if table not in ("chartevents", "labevents"):
+            raise ValueError(f"unknown table for {name}: {table}")
+        fill = entry.get("max_fill_hours")
+        features.append(FeatureSpec(name, ids, low, high, table, int(fill) if fill is not None else None))
     payload = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
     return str(raw.get("version", "unversioned")), tuple(features), hashlib.sha256(payload).hexdigest()
 
+
+
+def fill_limits(features, default: int):
+    """Per-feature forward-fill limit: labs are drawn daily, vitals hourly."""
+    import numpy as np
+    return np.asarray([f.max_fill_hours if f.max_fill_hours is not None else default for f in features], dtype=np.int32)

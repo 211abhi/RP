@@ -93,3 +93,17 @@ def test_impute_loss_only_scores_hidden_and_observed_cells():
     # Now hide column 0, which IS observed at the last hour: error 3.0 -> squared 9.0.
     _, parts = multitask_loss(output, batch, weights, None, keep=torch.tensor([[0.0, 1.0]]))
     assert parts["impute"] == pytest.approx(9.0)
+
+
+def test_new_start_label_ignores_running_drugs_and_unscores_a_short_future():
+    # a: off, then on at hour 3. b: on throughout (already running, never a "new start").
+    active = [[0, 1], [0, 1], [0, 1], [1, 1], [0, 1], [0, 1]]
+    stats = RobustStats(np.array([0.], np.float32), np.array([1.], np.float32))
+    w = build_windows([_stay(6, active)], stats, context=2, horizon=1, stride=1, max_gap=1,
+                      seed=42, ratios=RATIOS, n_drugs=2, start_horizon=2)
+    # Last observed hours 1,2,3,4. Hour 3: a is already on -> unscored. Hour 4: the 2h future
+    # runs past the stay -> unscored, not negative.
+    assert w.start_targets[:, 0].tolist() == [1.0, 1.0, 0.0, 0.0]
+    assert w.start_mask[:, 0].tolist() == [1.0, 1.0, 0.0, 0.0]
+    assert w.start_mask[:, 1].sum() == 0.0                       # b is running, so never scored
+    assert w.drug_history.shape == (4, 2, 2)

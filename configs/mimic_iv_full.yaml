@@ -1,0 +1,92 @@
+project:
+  name: mimic-iv-full
+  seed: 42
+  device: auto          # auto -> every visible CUDA GPU, else MPS, else CPU
+  artifact_dir: artifacts/mimic-iv-full
+
+data:
+  # Every release listed here is pooled into one cohort and trained as one model.
+  # Subject ids are namespaced by source name, so no patient can straddle a split.
+  # Credentialed PhysioNet download (https://physionet.org/content/mimiciv/3.1/), never a
+  # public dataset. Same loader and itemids as the demo; only the paths and stride differ.
+  sources:
+    - name: mimic-iv
+      root: data/raw/mimic-iv-3.1/physionet.org/files/mimiciv/3.1
+      icustays: icu/icustays.csv.gz
+      chartevents: icu/chartevents.csv.gz
+      prescriptions: hosp/prescriptions.csv.gz
+      labevents: hosp/labevents.csv.gz
+  feature_registry: configs/feature_registry.yaml
+  drug_registry: configs/drug_registry.yaml
+  # An order with no stop time is treated as active for this many hours, not forever.
+  default_drug_hours: 24
+  frequency_hours: 1
+  split_ratios: {train: 0.70, val: 0.15, test: 0.15}
+  max_forward_fill_hours: 6
+
+task:
+  # Three heads over one shared encoder:
+  #   forecast  next horizon_hours of every vital
+  #   drug      which medication classes are active during that horizon
+  #   impute    the current value of the columns withheld from the input
+  type: multitask
+  context_hours: 24
+  horizon_hours: 1
+  # ~94k stays: an hourly stride would need ~50 GB of windows; 12h keeps it near 4 GB.
+  stride_hours: 12
+  # Fraction of present columns hidden per training sample. This is what supervises the
+  # impute head, and it is also the only thing that makes the other two heads robust to a
+  # partial column set at inference. Set from the deployment scenario, never from test data.
+  column_dropout_rate: 0.3
+  # The medications the patient is already on are an input. They are hidden for this
+  # fraction of training samples, so the same model also answers "we don't know".
+  medication_inputs: true
+  medication_input_dropout: 0.5
+  # A "new start" is a class that is off at the last observed hour and on within this many.
+  start_horizon_hours: 24
+  loss_weights:
+    forecast: 1.0
+    drug: 0.5
+    drug_start: 0.5
+    impute: 0.5
+
+tokenizer:
+  patch_size: 4
+  embed_dim: 128
+  include_observed_mask: true
+  include_feature_present_mask: true
+  include_age: true
+
+encoder:
+  n_heads: 4
+  n_layers: 3
+  ffn_dim: 256
+  dropout: 0.1
+
+alignment:
+  enabled: false
+  projection_dim: 256
+  temperature: 0.07
+
+llm:
+  enabled: false
+  model_name: gpt2
+  hidden_dim: 768
+  cache_dir: .cache/llm
+
+soft_prompt:
+  n_tokens: 16
+  init_std: 0.01
+  subspace_dim: 128
+  maxiter: 20
+  popsize: 8
+
+training:
+  batch_size: 256
+  epochs: 60
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  patience: 5
+  num_workers: 4
+  amp: true            # mixed precision; ignored on CPU
+

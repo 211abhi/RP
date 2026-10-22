@@ -33,7 +33,9 @@ def main():
               "drug_registry_digest":meta.get("drug_registry_digest",""),"features":meta["features"],
               "drugs":drugs,"context":int(cfg["task"]["context_hours"]),"horizon":int(cfg["task"]["horizon_hours"])}
     weight=positive_weight(meta.get("drug_prevalence",[])) if n_drugs else None
-    result=train_model(model,windows,cfg,artifact/"checkpoints"/"multitask.pt",contract,weight,verbose=not args.json)
+    # New starts are rarer than active orders, so they get a higher cap.
+    start_weight=positive_weight(meta.get("start_prevalence",[]),cap=50.0) if n_drugs and meta.get("start_prevalence") else None
+    result=train_model(model,windows,cfg,artifact/"checkpoints"/"multitask.pt",contract,weight,verbose=not args.json,start_weight=start_weight)
     (artifact/"training_metrics.json").write_text(json.dumps(result,indent=2)+"\n")
     if args.json: print(json.dumps(result,indent=2))
 if __name__=="__main__": main()

@@ -32,6 +32,8 @@ class FeatureSpec:
     itemids: tuple[int, ...]
     minimum: float
     maximum: float
+    table: str = "chartevents"            # or "labevents"
+    max_fill_hours: int | None = None     # forward-fill limit; None -> data.max_forward_fill_hours
 
 
 DEFAULT_FEATURES: tuple[FeatureSpec, ...] = (
@@ -140,7 +142,8 @@ def collect_hourly_events(
     allowed_stays: set[str] | None = None,
 ) -> tuple[dict[tuple[str, datetime, int], list[float]], set[int]]:
     """Collect valid numeric observations by stay, hour, and canonical feature index."""
-    item_map = {itemid: (index, spec) for index, spec in enumerate(features) for itemid in spec.itemids}
+    item_map = {itemid: (index, spec) for index, spec in enumerate(features) for itemid in spec.itemids
+                if spec.table == "chartevents"}
     buckets: dict[tuple[str, datetime, int], list[float]] = defaultdict(list)
     seen_items: set[int] = set()
     with _open_csv(Path(path)) as handle:
@@ -170,6 +173,48 @@ def collect_hourly_events(
     return buckets, seen_items
 
 
+def collect_lab_events(
+    path: str | Path,
+    features: Sequence[FeatureSpec],
+    windows: Mapping[str, Sequence[tuple[str, datetime, datetime]]],
+) -> tuple[dict[tuple[str, datetime, int], list[float]], set[int]]:
+    """Collect lab results onto ICU stays by subject and time.
+
+    labevents carries no stay id, and `hadm_id` is blank for many MIMIC-III rows, so a
+    result belongs to whichever of the subject's stays was open at that hour. Results drawn
+    outside every stay (clinic, ED before transfer) have no hour to land on and are dropped.
+    """
+    item_map = {itemid: (index, spec) for index, spec in enumerate(features) for itemid in spec.itemids
+                if spec.table == "labevents"}
+    buckets: dict[tuple[str, datetime, int], list[float]] = defaultdict(list)
+    seen_items: set[int] = set()
+    if not item_map:
+        return buckets, seen_items
+    with _open_csv(Path(path)) as handle:
+        reader = csv.DictReader(handle)
+        missing = {"subject_id", "charttime", "itemid", "valuenum"}.difference(reader.fieldnames or ())
+        if missing:
+            raise ValueError(f"labevents is missing required columns: {sorted(missing)}")
+        for row in reader:
+            stays = windows.get(row["subject_id"])
+            if not stays:
+                continue
+            try:
+                index, spec = item_map[int(row["itemid"])]
+                value = float(row["valuenum"])
+                charttime = _floor_hour(_parse_time(row["charttime"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(value) or not (spec.minimum <= value <= spec.maximum):
+                continue
+            for stay_id, start, end in stays:
+                if start <= charttime <= end:
+                    buckets[(stay_id, charttime, index)].append(value)
+                    seen_items.add(int(row["itemid"]))
+                    break
+    return buckets, seen_items
+
+
 def prepare_stays(
     icustays_path: str | Path,
     chartevents_path: str | Path,
@@ -179,6 +224,7 @@ def prepare_stays(
     prescriptions_path: str | Path | None = None,
     drugs: Sequence["DrugSpec"] = (),
     default_drug_hours: int = 24,
+    labevents_path: str | Path | None = None,
 ) -> list[HourlyStay]:
     """Create deterministic hourly series for ICU stays using within-hour medians.
 
@@ -196,7 +242,17 @@ def prepare_stays(
         selected_ids = selected_ids[:limit_stays]
     selected = set(selected_ids)
     buckets, seen_items = collect_hourly_events(chartevents_path, features, selected)
-    present = [int(any(itemid in seen_items for itemid in spec.itemids)) for spec in features]
+    seen = {"chartevents": seen_items, "labevents": set()}
+    if labevents_path is not None:
+        windows: dict[str, list[tuple[str, datetime, datetime]]] = defaultdict(list)
+        for stay_id in selected_ids:
+            subject, intime, outtime, _ = bounds[stay_id]
+            raw_subject = subject.split(":", 1)[1] if source else subject
+            windows[raw_subject].append((stay_id, _floor_hour(intime), _floor_hour(outtime)))
+        labs, seen["labevents"] = collect_lab_events(labevents_path, features, windows)
+        for key, observations in labs.items():
+            buckets.setdefault(key, []).extend(observations)
+    present = [int(any(itemid in seen[spec.table] for itemid in spec.itemids)) for spec in features]
 
     intervals: dict[str, list] = {}
     drug_present = [0] * len(drugs)
@@ -257,12 +313,14 @@ def load_sources(cfg: dict, features: Sequence[FeatureSpec],
     for source in config_sources(cfg):
         root = resolve_path(cfg, source["root"])
         prescriptions = root / source["prescriptions"] if source.get("prescriptions") else None
-        if prescriptions is not None and not prescriptions.exists():
-            raise ValueError(f"configured prescriptions file is missing: {prescriptions}")
+        labevents = root / source["labevents"] if source.get("labevents") else None
+        for table, path in (("prescriptions", prescriptions), ("labevents", labevents)):
+            if path is not None and not path.exists():
+                raise ValueError(f"configured {table} file is missing: {path}")
         stays.extend(prepare_stays(root / source["icustays"], root / source["chartevents"],
                                    features, limit_stays, source["name"],
                                    prescriptions, drugs,
-                                   int(cfg["data"].get("default_drug_hours", 24))))
+                                   int(cfg["data"].get("default_drug_hours", 24)), labevents))
     if not stays:
         raise ValueError("no stays loaded from any configured source")
     return stays
@@ -281,4 +339,4 @@ def config_sources(cfg: dict) -> list[dict]:
         return [dict(entry, name=str(entry["name"])) for entry in sources]
     return [{"name": "", "root": data["root"], "icustays": data["icustays"],
              "chartevents": data["chartevents"],
-             **({"prescriptions": data["prescriptions"]} if "prescriptions" in data else {})}]
+             **{key: data[key] for key in ("prescriptions", "labevents") if key in data}}]

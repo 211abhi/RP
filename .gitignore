@@ -10,3 +10,4 @@ __pycache__/
 configs/runtime.yaml
 *_artifacts.zip
 *.egg-info/
+mimic_demo_data.zip

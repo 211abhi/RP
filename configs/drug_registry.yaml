@@ -1,0 +1,95 @@
+# Canonical medication registry for the medication-prediction head.
+#
+# Prescriptions name the same concept many ways: "vancomycin", "vancomycin hcl",
+# "vancomycin oral liquid". Free-text drug strings are therefore collapsed into canonical
+# classes here, by lowercase substring patterns, so one set of weights serves every MIMIC
+# release. Which string means which class is registry data, never code.
+#
+# Matching is FIRST MATCH WINS, top to bottom. Single-agent classes come before the
+# grouped ones so "heparin flush" lands in `heparin`, not in a generic flush bucket.
+#
+# Grouped classes (vasopressor, opioid, sedative, beta_lactam, ...) are deliberate: the
+# demo cohorts are small, and a single agent with 13 orders cannot be learned or
+# evaluated, while the clinical decision the group represents can.
+#
+# Only drug_type == MAIN rows are read. Additive/base rows describe the diluent of a
+# MAIN order, so counting them would double-count the same decision.
+version: "mimic-drugs-v1"
+drugs:
+  - name: insulin
+    match: ["insulin"]
+  - name: potassium_chloride
+    match: ["potassium chloride"]
+  - name: magnesium_sulfate
+    match: ["magnesium sulfate", "magnesium oxide"]
+  - name: calcium_gluconate
+    match: ["calcium gluconate", "calcium carbonate"]
+  - name: sodium_bicarbonate
+    match: ["sodium bicarbonate"]
+  - name: saline
+    match: ["sodium chloride 0.9", "sodium chloride 0.45", "nacl 0.9"]
+  - name: dextrose
+    match: ["dextrose", "d5w"]
+  - name: glucagon
+    match: ["glucagon"]
+  - name: furosemide
+    match: ["furosemide", "lasix"]
+  - name: heparin
+    match: ["heparin", "enoxaparin", "lovenox"]
+  - name: warfarin
+    match: ["warfarin", "coumadin"]
+  - name: aspirin
+    match: ["aspirin"]
+  - name: metoprolol
+    match: ["metoprolol", "lopressor"]
+  - name: hydralazine
+    match: ["hydralazine"]
+  - name: amiodarone
+    match: ["amiodarone"]
+  - name: diltiazem
+    match: ["diltiazem"]
+  - name: nitroglycerin
+    match: ["nitroglycerin"]
+  - name: vasopressor
+    match: ["levophed", "phenylephrine", "vasopressin", "dopamine",
+            "epinephrine", "dobutamine", "milrinone"]  # epinephrine also catches norepinephrine
+  - name: acetaminophen
+    match: ["acetaminophen", "tylenol"]
+  - name: opioid
+    match: ["morphine", "fentanyl", "hydromorphone", "dilaudid", "oxycodone", "codeine",
+            "tramadol", "methadone", "meperidine"]
+  - name: sedative
+    match: ["propofol", "midazolam", "lorazepam", "diazepam", "dexmedetomidine", "ativan"]
+  - name: vancomycin
+    match: ["vancomycin"]
+  - name: beta_lactam
+    match: ["piperacillin", "cefazolin", "ceftriaxone", "cefepime", "ceftazidime",
+            "meropenem", "ampicillin", "nafcillin", "penicillin", "aztreonam", "zosyn"]
+  - name: fluoroquinolone
+    match: ["ciprofloxacin", "levofloxacin", "moxifloxacin"]
+  - name: metronidazole
+    match: ["metronidazole", "flagyl"]
+  - name: macrolide
+    match: ["azithromycin", "erythromycin", "clarithromycin"]
+  - name: bronchodilator
+    match: ["albuterol", "ipratropium", "combivent"]
+  - name: corticosteroid
+    match: ["prednisone", "dexamethasone", "hydrocortisone", "prednisolone",
+            "solu-medrol"]  # prednisolone also catches methylprednisolone
+  - name: acid_suppression
+    match: ["pantoprazole", "famotidine", "ranitidine", "omeprazole", "lansoprazole",
+            "protonix"]  # omeprazole also catches esomeprazole
+  - name: laxative
+    match: ["docusate", "senna", "bisacodyl", "lactulose", "polyethylene glycol", "colace"]
+  - name: antiemetic
+    match: ["ondansetron", "metoclopramide", "prochlorperazine", "zofran"]
+  - name: antipsychotic
+    match: ["haloperidol", "quetiapine", "olanzapine", "risperidone", "haldol"]
+  - name: levothyroxine
+    match: ["levothyroxine", "synthroid"]
+  - name: statin
+    match: ["atorvastatin", "simvastatin", "pravastatin", "rosuvastatin", "lovastatin"]
+  - name: albumin
+    match: ["albumin"]
+  - name: gabapentinoid
+    match: ["gabapentin", "pregabalin"]

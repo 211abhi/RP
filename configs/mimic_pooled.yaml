@@ -1,0 +1,86 @@
+project:
+  name: mimic-vitals-pooled
+  seed: 42
+  device: auto          # auto -> every visible CUDA GPU, else MPS, else CPU
+  artifact_dir: artifacts/mimic-pooled
+
+data:
+  # Every release listed here is pooled into one cohort and trained as one model.
+  # Subject ids are namespaced by source name, so no patient can straddle a split.
+  sources:
+    - name: mimic-iv-demo
+      root: data/raw/mimic-iv-demo-2.2/physionet.org/files/mimic-iv-demo/2.2
+      icustays: icu/icustays.csv.gz
+      chartevents: icu/chartevents.csv.gz
+      prescriptions: hosp/prescriptions.csv.gz
+    - name: mimic-iii-demo
+      root: data/raw/mimic-iii-demo-1.4/physionet.org/files/mimiciii-demo/1.4
+      icustays: ICUSTAYS.csv
+      chartevents: CHARTEVENTS.csv
+      prescriptions: PRESCRIPTIONS.csv
+  feature_registry: configs/feature_registry.yaml
+  drug_registry: configs/drug_registry.yaml
+  # An order with no stop time is treated as active for this many hours, not forever.
+  default_drug_hours: 24
+  frequency_hours: 1
+  split_ratios: {train: 0.70, val: 0.15, test: 0.15}
+  max_forward_fill_hours: 6
+
+task:
+  # Three heads over one shared encoder:
+  #   forecast  next horizon_hours of every vital
+  #   drug      which medication classes are active during that horizon
+  #   impute    the current value of the columns withheld from the input
+  type: multitask
+  context_hours: 24
+  horizon_hours: 1
+  stride_hours: 1
+  # Fraction of present columns hidden per training sample. This is what supervises the
+  # impute head, and it is also the only thing that makes the other two heads robust to a
+  # partial column set at inference. Set from the deployment scenario, never from test data.
+  column_dropout_rate: 0.3
+  loss_weights:
+    forecast: 1.0
+    drug: 0.5
+    impute: 0.5
+
+tokenizer:
+  patch_size: 4
+  embed_dim: 128
+  include_observed_mask: true
+  include_feature_present_mask: true
+  include_age: true
+
+encoder:
+  n_heads: 4
+  n_layers: 3
+  ffn_dim: 256
+  dropout: 0.1
+
+alignment:
+  enabled: false
+  projection_dim: 256
+  temperature: 0.07
+
+llm:
+  enabled: false
+  model_name: gpt2
+  hidden_dim: 768
+  cache_dir: .cache/llm
+
+soft_prompt:
+  n_tokens: 16
+  init_std: 0.01
+  subspace_dim: 128
+  maxiter: 20
+  popsize: 8
+
+training:
+  batch_size: 64
+  epochs: 60
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  patience: 10
+  num_workers: 4
+  amp: true            # mixed precision; ignored on CPU
+

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mimic-llm-time-series-forecaster"
+version = "0.1.0"
+description = "Mask-aware MIMIC adaptation of the frozen-LLM time-series forecaster"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "torch>=2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+llm = ["transformers>=4.40", "safetensors>=0.4", "cma>=3.3"]
+
+[project.scripts]
+mimic-prepare = "mimic_forecaster.cli.prepare:main"
+mimic-inspect = "mimic_forecaster.cli.inspect:main"
+mimic-train = "mimic_forecaster.cli.train:main"
+mimic-evaluate = "mimic_forecaster.cli.evaluate:main"
+mimic-predict = "mimic_forecaster.cli.predict:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

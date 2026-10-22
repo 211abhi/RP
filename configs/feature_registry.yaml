@@ -1,0 +1,51 @@
+# Canonical vital-sign registry.
+#
+# One clinical concept can be charted under different itemids by different systems:
+# MIMIC-III CareVue, MIMIC-III MetaVision, and MIMIC-IV all record a heart rate under
+# their own id. They are merged into a single canonical column here, so every dataset
+# reaches the model through the same tensor and the same weights.
+#
+# Deliberately NOT mapped, because they pass a plain range check while meaning something
+# other than a patient measurement:
+#   5820 / 8554  SpO2 alarm limits (%)          5817 / 8551  NBP alarm limits (mmHg)
+#   220046 / 220047  heart-rate alarm limits    619  ventilator-set respiratory rate
+#   676 / 677  temperature in Celsius           226253  SpO2 desat limit
+# Blood pressure is non-invasive cuff only; arterial-line ids (51/8368/52, 220050-2)
+# measure the same quantity at a different site with a systematic offset.
+version: "mimic-vitals-v2"
+features:
+  - name: heart_rate
+    itemids: [220045, 211]          # metavision/mimic-iv, carevue
+    unit: bpm
+    required: false
+    valid_range: [20, 260]
+  - name: respiratory_rate
+    itemids: [220210, 618]
+    unit: insp/min
+    required: false
+    valid_range: [2, 80]
+  - name: spo2
+    itemids: [220277, 646]
+    unit: percent
+    required: false
+    valid_range: [40, 100]
+  - name: systolic_bp
+    itemids: [220179, 455]
+    unit: mmHg
+    required: false
+    valid_range: [30, 300]
+  - name: diastolic_bp
+    itemids: [220180, 8441]
+    unit: mmHg
+    required: false
+    valid_range: [10, 200]
+  - name: mean_bp
+    itemids: [220181, 456]
+    unit: mmHg
+    required: false
+    valid_range: [20, 250]
+  - name: temperature_f
+    itemids: [223761, 678, 679]     # Fahrenheit only; Celsius ids are excluded
+    unit: degF
+    required: false
+    valid_range: [80, 115]

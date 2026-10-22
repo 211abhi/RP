@@ -1,0 +1,12 @@
+/data/
+/artifacts/
+checkpoints/
+logs/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+configs/runtime.yaml
+*_artifacts.zip
+*.egg-info/

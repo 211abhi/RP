@@ -13,14 +13,15 @@ now. One shared encoder, four heads:
 | **`impute`** | the current value of the columns that were **not** supplied | MAE vs. training-median fill |
 | **`forecast`** | the next hour of every vital and lab | MAE vs. repeat-last-value |
 
-> Research prototype on the open MIMIC-III / MIMIC-IV demo cohorts (276 ICU stays,
-> 200 patients). **Not for clinical use.**
+> Research prototype on the open MIMIC-II / III / IV demo cohorts (6,092 adult ICU stays,
+> ~4,200 patients; 75/10/15 subject split). **Not for clinical use.**
 >
-> Pooled-demo test results: forecast **+4.5%** skill over repeat-last-value (95% CI +2.0 to
-> +7.0); medication macro AP **0.451** vs. a 0.405 prevalence floor, with only 14 of 36
-> classes above 0.6 AUROC; imputation **-19.8%** MAE vs. median fill, carried entirely by
-> the blood pressures. The cohort is 200 patients and the model overfits it within ~7
-> epochs. Read `MODEL_CARD.md` before quoting any of these.
+> Test results (48k windows, ~600 patients): forecast **+9.8%** over repeat-last-value
+> (95% CI +9.4 to +10.2); new starts within 24h macro AUROC **0.777**, AP **0.122** vs a 0.039
+> prevalence floor; active-next-hour AP 0.993 with current meds (carry-forward 0.990) and
+> 0.431 without (floor 0.300); imputation **+14.9%** over median fill. MIMIC-II and MIMIC-III
+> share a hospital and era, so a few patients may sit in both sources under different ids.
+> Read `MODEL_CARD.md` before quoting any of these.
 
 ## Architecture
 
